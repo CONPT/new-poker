@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Heads‑Up Poker — One‑Code Join</title>
+  <title>Heads‑Up Poker — Realtime (Firebase, code-to-join)</title>
   <style>
     :root { --bg:#08301d; --felt:#0d5c3a; --rail:#3b1f0f; --accent:#2bd576; --text:#f7fff9; --muted:#bfe8d1; --danger:#ff6b6b; --line:#145336; }
     *{box-sizing:border-box}
@@ -12,7 +12,7 @@
     header h1{font-size:18px;margin:0;font-weight:800;letter-spacing:.3px}
     header .tag{font-size:12px;color:var(--muted)}
 
-    main{display:grid;grid-template-columns:380px 1fr 320px;gap:14px;padding:14px}
+    main{display:grid;grid-template-columns:380px 1fr 360px;gap:14px;padding:14px}
     .card{background:rgba(0,0,0,.18);border:1px solid var(--line);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
     .section{padding:14px}
     .stack{display:flex;flex-direction:column;gap:10px}
@@ -52,8 +52,8 @@
 </head>
 <body>
   <header>
-    <h1>Heads‑Up Poker <span class="tag">(enter the same code to link)</span></h1>
-    <div class="row"><span class="pill" id="connStatus">Not connected</span></div>
+    <h1>Heads‑Up Poker <span class="tag">(Firebase — enter the same code)</span></h1>
+    <div class="row"><span class="pill" id="connStatus">Not joined</span></div>
   </header>
 
   <main>
@@ -66,11 +66,18 @@
           <label class="grow">Game code<input id="codeInput" type="text" placeholder="e.g. POKER-7F3A"/></label>
           <button id="btnRndCode">Random</button>
         </div>
-        <div class="row">
-          <button id="btnJoin" class="primary">Enter game</button>
-        </div>
-        <small class="pill">First to enter claims the room as Host. Second joins as Guest. Powered by PeerJS Cloud.</small>
+        <div class="row"><button id="btnJoin" class="primary">Enter game</button></div>
+        <small class="pill">First to enter claims Host; second is Guest. No P2P — state syncs through Firebase.</small>
       </div>
+      <div class="sep"></div>
+      <details>
+        <summary>Firebase config (paste once)</summary>
+        <div class="stack">
+          <small class="pill">Create a Firebase project → Realtime Database → Start in test mode (or write secure rules below). Paste config JSON here and click Apply.</small>
+          <textarea id="fbCfg" placeholder='{"apiKey":"...","authDomain":"...","databaseURL":"https://YOUR-PROJECT.firebaseio.com","projectId":"...","appId":"..."}'></textarea>
+          <div class="row"><button id="applyCfg">Apply config</button><button id="useDemo">Use demo (public sandbox)</button></div>
+        </div>
+      </details>
     </section>
 
     <!-- MIDDLE: Table / Game -->
@@ -110,7 +117,7 @@
       </div>
     </section>
 
-    <!-- RIGHT: Settings / Names -->
+    <!-- RIGHT: Settings / Rules -->
     <section class="card section stack">
       <div class="stack">
         <div class="row">
@@ -122,165 +129,178 @@
           <button id="applySettings">Apply</button>
         </div>
         <div class="sep"></div>
-        <small class="pill">Deck shuffles are derived from the game code each hand so both sides stay in sync.</small>
+        <small class="pill">Recommended Firebase rules snippet is embedded at the bottom of this file.</small>
       </div>
     </section>
   </main>
 
   <script>
-  /********************
-   * Helpers & UI
-   ********************/
+  /******************** Helpers & UI ********************/
   const $ = s=>document.querySelector(s); const logEl=$('#log');
   function log(m){ logEl.innerHTML = `[${new Date().toLocaleTimeString()}] ${m}<br>` + logEl.innerHTML; }
   const statusEl=$('#connStatus'); function setStatus(s){ statusEl.textContent=s; }
   function randomCode(){ const a='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s=''; for(let i=0;i<8;i++) s+=a[Math.floor(Math.random()*a.length)]; return `POKER-${s.match(/.{1,4}/g).join('-')}`; }
   $('#btnRndCode').onclick=()=>{ $('#codeInput').value=randomCode(); };
 
-  // Cards
+  // Cards & evaluation
   const SUITS=['♠','♥','♦','♣']; const RANKS=['2','3','4','5','6','7','8','9','T','J','Q','K','A'];
   function makeDeck(){ const d=[]; for(const s of SUITS){ for(const r of RANKS){ d.push(r+s); } } return d; }
   function xorshift32(seed){ let x=seed>>>0; return ()=>{ x^=x<<13; x^=x>>>17; x^=x<<5; return (x>>>0)/0xffffffff; }; }
   function seededShuffle(seed, deck){ const rnd=xorshift32(seed); const a=deck.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.floor(rnd()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
   function codeToSeed(code){ let h=2166136261>>>0; for(const ch of code){ h^=ch.charCodeAt(0); h=(h*16777619)>>>0; } return h; }
   function renderCard(code, dim=false){ const el=document.createElement('div'); el.className='card-ui'+(dim?' dim':''); el.textContent=code; return el; }
-
-  // Hand evaluator
   const ranksMap = Object.fromEntries(RANKS.map((r,i)=>[r,i]));
-  function evaluate7(cards){ const bySuit={'♠':[], '♥':[], '♦':[], '♣':[]}; const counts=new Map();
-    for(const c of cards){ const r=c[0], s=c[1]; bySuit[s].push(r); counts.set(r,(counts.get(r)||0)+1); }
-    const allRanks=cards.map(c=>ranksMap[c[0]]).sort((a,b)=>b-a);
-    function straightValue(arr){ const u=[...new Set(arr)].sort((a,b)=>b-a); if(u.includes(12)) u.push(-1); let run=1, best=null; for(let i=0;i<u.length-1;i++){ if(u[i]-1===u[i+1]){ run++; if(run>=5) best=u[i-3]; } else run=1; } return best; }
-    let flushSuit=null, flushRanks=null; for(const s of SUITS){ if(bySuit[s].length>=5){ flushSuit=s; flushRanks=bySuit[s].map(r=>ranksMap[r]).sort((a,b)=>b-a); break; } }
-    const straightHigh=straightValue(allRanks);
-    if(flushSuit){ const sr=bySuit[flushSuit].map(r=>ranksMap[r]).sort((a,b)=>b-a); const sh=straightValue(sr); if(sh!==null && sh!==undefined) return [8,sh]; }
-    const groups=[...counts.entries()].map(([r,c])=>({rv:ranksMap[r],c})).sort((a,b)=> (b.c-a.c)||(b.rv-a.rv));
-    if(groups[0]?.c===4){ const four=groups[0].rv; const k=Math.max(...allRanks.filter(v=>v!==four)); return [7,four,k]; }
-    if(groups[0]?.c===3 && groups[1]?.c>=2) return [6,groups[0].rv,groups[1].rv];
-    if(flushSuit) return [5,...flushRanks.slice(0,5)];
-    if(straightHigh!==null && straightHigh!==undefined) return [4,straightHigh];
-    if(groups[0]?.c===3){ const t=groups[0].rv; const ks=allRanks.filter(v=>v!==t).slice(0,2); return [3,t,...ks]; }
-    if(groups[0]?.c===2 && groups[1]?.c===2){ const hi=Math.max(groups[0].rv,groups[1].rv), lo=Math.min(groups[0].rv,groups[1].rv); const k=allRanks.filter(v=>v!==hi && v!==lo)[0]; return [2,hi,lo,k]; }
-    if(groups[0]?.c===2){ const p=groups[0].rv; const ks=allRanks.filter(v=>v!==p).slice(0,3); return [1,p,...ks]; }
-    return [0,...allRanks.slice(0,5)]; }
+  function evaluate7(cards){ const bySuit={'♠':[], '♥':[], '♦':[], '♣':[]}; const counts=new Map(); for(const c of cards){ const r=c[0], s=c[1]; bySuit[s].push(r); counts.set(r,(counts.get(r)||0)+1); } const allRanks=cards.map(c=>ranksMap[c[0]]).sort((a,b)=>b-a); function straightValue(arr){ const u=[...new Set(arr)].sort((a,b)=>b-a); if(u.includes(12)) u.push(-1); let run=1, best=null; for(let i=0;i<u.length-1;i++){ if(u[i]-1===u[i+1]){ run++; if(run>=5) best=u[i-3]; } else run=1; } return best; } let flushSuit=null, flushRanks=null; for(const s of SUITS){ if(bySuit[s].length>=5){ flushSuit=s; flushRanks=bySuit[s].map(r=>ranksMap[r]).sort((a,b)=>b-a); break; } } const straightHigh=straightValue(allRanks); if(flushSuit){ const sr=bySuit[flushSuit].map(r=>ranksMap[r]).sort((a,b)=>b-a); const sh=straightValue(sr); if(sh!==null && sh!==undefined) return [8,sh]; } const groups=[...counts.entries()].map(([r,c])=>({rv:ranksMap[r],c})).sort((a,b)=> (b.c-a.c)||(b.rv-a.rv)); if(groups[0]?.c===4){ const four=groups[0].rv; const k=Math.max(...allRanks.filter(v=>v!==four)); return [7,four,k]; } if(groups[0]?.c===3 && groups[1]?.c>=2) return [6,groups[0].rv,groups[1].rv]; if(flushSuit) return [5,...flushRanks.slice(0,5)]; if(straightHigh!==null && straightHigh!==undefined) return [4,straightHigh]; if(groups[0]?.c===3){ const t=groups[0].rv; const ks=allRanks.filter(v=>v!==t).slice(0,2); return [3,t,...ks]; } if(groups[0]?.c===2 && groups[1]?.c===2){ const hi=Math.max(groups[0].rv,groups[1].rv), lo=Math.min(groups[0].rv,groups[1].rv); const k=allRanks.filter(v=>v!==hi && v!==lo)[0]; return [2,hi,lo,k]; } if(groups[0]?.c===2){ const p=groups[0].rv; const ks=allRanks.filter(v=>v!==p).slice(0,3); return [1,p,...ks]; } return [0,...allRanks.slice(0,5)]; }
   function compareRanks(a,b){ for(let i=0;i<Math.max(a.length,b.length);i++){ const av=a[i]??-1, bv=b[i]??-1; if(av!==bv) return av-bv; } return 0; }
 
-  /********************
-   * Game State
-   ********************/
-  let peer, conn, isHost=false, connected=false;
+  /******************** Firebase init ********************/
+  let app=null, db=null, uid=null;
+  const DEFAULT_DEMO_CFG = {"apiKey":"AIzaSyDEMO-DEMO-DEMO","authDomain":"demo.firebaseapp.com","databaseURL":"https://poker-demo-default-rtdb.firebaseio.com","projectId":"demo","appId":"1:123:web:demo"};
+
+  async function initFirebase(cfg){
+    if(app) return;
+    app = firebase.initializeApp(cfg);
+    db = firebase.database();
+    // Anonymous auth (optional). If not enabled, RTDB test rules will still work.
+    try{ const userCred = await firebase.auth().signInAnonymously(); uid=userCred.user.uid; }catch(e){ uid = 'anon-'+Math.random().toString(36).slice(2); }
+  }
+
+  // Apply config buttons
+  $('#applyCfg').onclick = async ()=>{
+    try{ const cfg = JSON.parse($('#fbCfg').value.trim()); await initFirebase(cfg); alert('Firebase config applied.'); }
+    catch(e){ alert('Invalid JSON config. Paste the Firebase config object.'); }
+  };
+  $('#useDemo').onclick = async ()=>{ await initFirebase(DEFAULT_DEMO_CFG); alert('Demo Firebase config applied. (Public sandbox)'); };
+
+  /******************** Game state via RTDB ********************/
+  let isHost=false, joined=false; let roomRef=null; let unsubscribes=[];
   let state={ code:'', handNo:1, street:'Preflop', dealer:0,
     players:[{name:'Host', bank:1000, bet:0, cards:[], folded:false},{name:'Guest', bank:1000, bet:0, cards:[], folded:false}],
-    sb:5, bb:10, pot:0, board:[], turn:0, seed:1234, deck:[] };
+    sb:5, bb:10, pot:0, board:[], turn:0, seed:1234 };
   function youIndex(){ return isHost?0:1; } function oppIndex(){ return isHost?1:0; }
   function updateCodeTag(){ $('#codeTag').textContent = state.code || '—'; }
 
-  function applySettings(){ state.sb=parseInt($('#sb').value)||5; state.bb=parseInt($('#bb').value)||10; const bk=parseInt($('#startBank').value)||1000; state.players[0].bank=bk; state.players[1].bank=bk; const nm=$('#nameInput').value|| (isHost?'Host':'Guest'); state.players[youIndex()].name=nm; send({t:'settings', sb:state.sb, bb:state.bb, bank:bk, name:nm}); render(); }
-  $('#applySettings').onclick=applySettings;
-  $('#nameInput').addEventListener('input', ()=>{ state.players[youIndex()].name=$('#nameInput').value|| (isHost?'Host':'Guest'); send({t:'name', name: state.players[youIndex()].name}); render(); });
-
-  function resetBets(){ state.players.forEach(p=>p.bet=0); }
-  function nextStreet(){ if(state.street==='Preflop'){ state.street='Flop'; state.board.push(state.deck.pop(),state.deck.pop(),state.deck.pop()); }
-    else if(state.street==='Flop'){ state.street='Turn'; state.board.push(state.deck.pop()); }
-    else if(state.street==='Turn'){ state.street='River'; state.board.push(state.deck.pop()); }
-    else { state.street='Showdown'; }
-    send({t:'street', street:state.street, board:state.board}); resetBets(); render(); }
-
-  function startHand(){ if(!connected){ alert('Connect to your friend first.'); return; }
-    state.handNo++; state.board=[]; state.pot=0; resetBets(); state.players.forEach(p=>{ p.cards=[]; p.folded=false; }); state.street='Preflop';
-    if(isHost){ const nonce=(Math.random()*0xffffffff)>>>0; state.seed = codeToSeed((state.code||'POKER')+":"+nonce); send({t:'seed', seed:state.seed, handNo:state.handNo, dealer:state.dealer, sb:state.sb, bb:state.bb}); }
-    state.deck=seededShuffle(state.seed, makeDeck());
-    state.players[0].cards=[state.deck.pop(), state.deck.pop()]; state.players[1].cards=[state.deck.pop(), state.deck.pop()];
-    const d=state.dealer, nd=1-d; postBlind(d,state.sb); postBlind(nd,state.bb); state.turn=d;
-    send({t:'cards', you:isHost?state.players[1].cards:state.players[0].cards}); render(); }
-  function postBlind(i,amt){ state.players[i].bank-=amt; state.players[i].bet+=amt; state.pot+=amt; }
-  function toggleDealer(){ state.dealer = state.dealer?0:1; }
-
-  function fold(){ const i=youIndex(); state.players[i].folded=true; const w=oppIndex(); log(`${state.players[i].name} folds. ${state.players[w].name} wins $${state.pot}.`); send({t:'fold'}); state.players[w].bank += state.pot; endHand(); }
-  function checkCall(){ const i=youIndex(), o=oppIndex(); const needed=Math.max(0, state.players[o].bet - state.players[i].bet); if(needed>0){ if(state.players[i].bank<needed) return alert('Not enough chips'); state.players[i].bank-=needed; state.players[i].bet+=needed; state.pot+=needed; log(`${state.players[i].name} calls $${needed}.`); send({t:'call', amt:needed}); if(state.players[i].bet===state.players[o].bet){ nextStreet(); state.turn=state.dealer; render(); } }
-    else { log(`${state.players[i].name} checks.`); send({t:'check'}); if(state.players[o].bet===0){ nextStreet(); state.turn=state.dealer; render(); } }
-    flipTurn(); render(); }
-  function betRaise(){ const i=youIndex(), o=oppIndex(); const amt=parseInt($('#betAmt').value)||0; if(amt<=0) return; const needed=Math.max(0, state.players[o].bet - state.players[i].bet); const total=needed+amt; if(state.players[i].bank<total) return alert('Not enough chips'); if(needed>0){ state.players[i].bank-=needed; state.players[i].bet+=needed; state.pot+=needed; } state.players[i].bank-=amt; state.players[i].bet+=amt; state.pot+=amt; log(`${state.players[i].name} bets/raises $${amt}.`); send({t:'bet', call:needed, raise:amt}); flipTurn(); render(); }
-  function flipTurn(){ state.turn = state.turn?0:1; $('#turnTag').textContent = (state.turn===youIndex())? 'Your':'Their'; }
-
-  function showdown(){ state.street='Showdown'; const p0=evaluate7([...state.players[0].cards,...state.board]); const p1=evaluate7([...state.players[1].cards,...state.board]); const cmp=compareRanks(p0,p1); let w = cmp>0?0:(cmp<0?1:-1); if(state.players[0].folded) w=1; if(state.players[1].folded) w=0; if(w===-1){ state.players[0].bank+=Math.floor(state.pot/2); state.players[1].bank+=Math.ceil(state.pot/2); log(`Showdown: split pot $${state.pot}.`); } else { state.players[w].bank+=state.pot; log(`Showdown: ${state.players[w].name} wins $${state.pot}.`); } send({t:'showdown'}); endHand(); }
-  function endHand(){ state.pot=0; state.players.forEach(p=>p.bet=0); toggleDealer(); state.turn=state.dealer; render(); }
-
-  // Buttons
-  $('#btnDeal').onclick=startHand; $('#btnFold').onclick=fold; $('#btnCheck').onclick=checkCall; $('#btnBet').onclick=betRaise; $('#btnShowdown').onclick=showdown;
-  $('#btnJoin').onclick=()=>{
+  async function joinRoom(){
+    if(!db){ alert('Apply Firebase config first (or Use demo).'); return; }
     const code=$('#codeInput').value.trim(); if(!code) return alert('Enter a game code');
-    state.code=code; updateCodeTag(); location.hash=encodeURIComponent(code); startPeerFlow(code);
-  };
+    state.code=code; updateCodeTag(); setStatus('Joining…');
+    roomRef = db.ref('rooms/'+encodeURIComponent(code));
 
-  /********************
-   * PeerJS one‑code flow
-   * First client to claim room becomes Host (ID = roomId)
-   * If ID is taken, become Guest with random ID and connect to roomId
-   ********************/
-  function startPeerFlow(code){
-    const roomId = `hu-${code}`;
-    setStatus('Connecting…');
-    // Try to be host
-    let triedGuest=false;
-    peer = new Peer(roomId, {host:'peerjs.com', port:443, secure:true});
+    // Host election: use a transaction to set host if absent
+    const hostRef = roomRef.child('meta/host');
+    const who = (await hostRef.transaction(cur=> cur||uid )).snapshot.val();
+    isHost = (who===uid);
 
-    peer.on('open', (id)=>{ isHost=true; setStatus('Waiting for opponent…'); log('You are Host. Room: '+roomId); });
+    // Initialize defaults (host only once)
+    if(isHost){
+      await roomRef.child('state').transaction(cur=> cur||({
+        handNo:1, street:'Preflop', dealer:0, sb:5, bb:10, pot:0, board:[], turn:0,
+        p0:{name:'Host', bank:1000, bet:0, cards:[], folded:false},
+        p1:{name:'Guest', bank:1000, bet:0, cards:[], folded:false}
+      }));
+    }
 
-    peer.on('connection', (c)=>{ if(conn) return; conn=c; bindConn(); });
+    // Presence
+    const presRef = roomRef.child('presence/'+uid);
+    await presRef.set({name: $('#nameInput').value|| (isHost?'Host':'Guest'), at: firebase.database.ServerValue.TIMESTAMP});
+    presRef.onDisconnect().remove();
 
-    peer.on('error', (e)=>{
-      const msg=(e&&e.type)||''; if(!triedGuest && (msg==='unavailable-id' || (e.message||'').includes('ID is taken'))){
-        // Become guest
-        triedGuest=true; tryGuest(roomId);
-      } else { console.error(e); alert('Connection error: '+(e.message||e)); setStatus('Error'); }
+    // Subscribe to state changes
+    unsubscribes.forEach(u=>u()); unsubscribes=[];
+    const off = roomRef.child('state').on('value', snap=>{ if(!snap.exists()) return; applyRemoteState(snap.val()); });
+    unsubscribes.push(()=> roomRef.child('state').off('value', off));
+
+    // Name updates
+    const nameRef = roomRef.child(isHost? 'state/p0/name':'state/p1/name');
+    await nameRef.set($('#nameInput').value|| (isHost?'Host':'Guest'));
+
+    joined=true; setStatus(isHost?'Joined as Host':'Joined as Guest'); render();
+  }
+  $('#btnJoin').onclick=joinRoom;
+
+  function setStatePatch(p){ if(!roomRef) return; roomRef.child('state').update(p); }
+
+  function applyRemoteState(s){
+    state.handNo=s.handNo; state.street=s.street; state.dealer=s.dealer; state.sb=s.sb; state.bb=s.bb; state.pot=s.pot; state.board=s.board||[]; state.turn=s.turn||0;
+    state.players[0]={name:s.p0.name, bank:s.p0.bank, bet:s.p0.bet, cards:s.p0.cards||[], folded:!!s.p0.folded};
+    state.players[1]={name:s.p1.name, bank:s.p1.bank, bet:s.p1.bet, cards:s.p1.cards||[], folded:!!s.p1.folded};
+    render();
+  }
+
+  // Settings
+  function applySettings(){ const sb=parseInt($('#sb').value)||5; const bb=parseInt($('#bb').value)||10; const bk=parseInt($('#startBank').value)||1000; setStatePatch({ sb, bb, p0:{...state.players[0], bank:bk}, p1:{...state.players[1], bank:bk} }); }
+  $('#applySettings').onclick=applySettings;
+  $('#nameInput').addEventListener('input', ()=>{ const nm=$('#nameInput').value|| (isHost?'Host':'Guest'); if(isHost) setStatePatch({p0:{...state.players[0], name:nm}}); else setStatePatch({p1:{...state.players[1], name:nm}}); });
+
+  // Host-only: start hand / street logic
+  function startHand(){ if(!joined) return alert('Join first'); if(!isHost) return alert('Only Host can deal');
+    const nonce=(Math.random()*0xffffffff)>>>0; const seed = codeToSeed((state.code||'POKER')+":"+nonce);
+    const deck = seededShuffle(seed, makeDeck());
+    const p0=[deck.pop(),deck.pop()], p1=[deck.pop(),deck.pop()];
+    const d=state.dealer, nd=1-d; const sb=state.sb, bb=state.bb;
+    const p0bet = (d===0?sb:bb), p1bet=(d===1?sb:bb);
+    setStatePatch({ handNo: state.handNo+1, street:'Preflop', board:[], pot: sb+bb, turn:d,
+      p0:{...state.players[0], cards: p0, bet:p0bet, bank: state.players[0].bank - p0bet, folded:false},
+      p1:{...state.players[1], cards: p1, bet:p1bet, bank: state.players[1].bank - p1bet, folded:false}
     });
   }
-  function tryGuest(roomId){
-    peer = new Peer(undefined, {host:'peerjs.com', port:443, secure:true});
-    peer.on('open', ()=>{ isHost=false; setStatus('Joining…'); const c = peer.connect(roomId); c.on('open', ()=>{ conn=c; bindConn(); }); c.on('error', e=>{ alert('Join failed: '+(e.message||e)); setStatus('Error'); }); });
-    peer.on('connection', ()=>{});
-    peer.on('error', e=>{ console.error(e); setStatus('Error'); });
-  }
-  function bindConn(){ connected=true; setStatus('Connected'); log('P2P connected.');
-    conn.on('data', m=>onMsg(m)); conn.on('close', ()=>{ connected=false; setStatus('Disconnected'); });
-    // Say hello with your display name
-    send({t:'hello', name: $('#nameInput').value||'Player'});
-  }
-  function send(obj){ if(conn && conn.open){ conn.send(obj); } }
-
-  /********************
-   * Incoming messages
-   ********************/
-  function onMsg(m){ switch(m.t){
-    case 'hello': state.players[oppIndex()].name = m.name || 'Opponent'; render(); break;
-    case 'settings': state.sb=m.sb; state.bb=m.bb; state.players[0].bank=m.bank; state.players[1].bank=m.bank; render(); break;
-    case 'name': state.players[oppIndex()].name=m.name; render(); break;
-    case 'seed': state.seed=m.seed; state.handNo=m.handNo; state.dealer=m.dealer; state.sb=m.sb; state.bb=m.bb; state.board=[]; state.pot=state.sb+state.bb; resetBets(); state.deck=seededShuffle(state.seed, makeDeck()); state.players[0].cards=[state.deck.pop(),state.deck.pop()]; state.players[1].cards=[state.deck.pop(),state.deck.pop()]; state.players[0].bet=(state.dealer===0?state.sb:state.bb); state.players[1].bet=(state.dealer===1?state.sb:state.bb); state.players[0].bank-=state.players[0].bet; state.players[1].bank-=state.players[1].bet; state.turn=state.dealer; state.street='Preflop'; render(); break;
-    case 'cards': state.players[youIndex()].cards=m.you; render(); break;
-    case 'street': state.street=m.street; state.board=m.board; resetBets(); render(); break;
-    case 'fold': state.players[oppIndex()].folded=true; log(`${state.players[oppIndex()].name} folds. You win $${state.pot}.`); state.players[youIndex()].bank+=state.pot; endHand(); break;
-    case 'call': state.players[oppIndex()].bank-=m.amt; state.players[oppIndex()].bet+=m.amt; state.pot+=m.amt; log(`${state.players[oppIndex()].name} calls $${m.amt}.`); if(state.players[youIndex()].bet===state.players[oppIndex()].bet){ nextStreet(); state.turn=state.dealer; } flipTurn(); render(); break;
-    case 'check': log(`${state.players[oppIndex()].name} checks.`); if(state.players[youIndex()].bet===0){ nextStreet(); state.turn=state.dealer; } flipTurn(); render(); break;
-    case 'bet': if(m.call>0){ state.players[oppIndex()].bank-=m.call; state.players[oppIndex()].bet+=m.call; state.pot+=m.call; } state.players[oppIndex()].bank-=m.raise; state.players[oppIndex()].bet+=m.raise; state.pot+=m.raise; log(`${state.players[oppIndex()].name} bets/raises $${m.raise}.`); flipTurn(); render(); break;
-    case 'showdown': showdown(); break; }
+  function nextStreet(){ if(!isHost) return; let street=state.street, board=state.board.slice(); const deck=seededShuffle( codeToSeed(state.code+":"+state.handNo), makeDeck()); // deterministic filler (unused draws ok)
+    if(street==='Preflop'){ street='Flop'; board.push(deck.pop(),deck.pop(),deck.pop()); }
+    else if(street==='Flop'){ street='Turn'; board.push(deck.pop()); }
+    else if(street==='Turn'){ street='River'; board.push(deck.pop()); }
+    else { street='Showdown'; }
+    setStatePatch({ street, board, p0:{...state.players[0], bet:0}, p1:{...state.players[1], bet:0} });
   }
 
-  /********************
-   * Render
-   ********************/
+  function postAction(patch){ if(!isHost) return; setStatePatch(patch); }
+
+  function fold(){ const i=youIndex(); if(isHost){ const w=1-i; postAction({ p0:{...state.players[0], folded:i===0?true:state.players[0].folded}, p1:{...state.players[1], folded:i===1?true:state.players[1].folded}, pWinner:w }); endHand(true); } }
+  function checkCall(){ const i=youIndex(), o=oppIndex(); const needed=Math.max(0, state.players[o].bet - state.players[i].bet); if(!isHost){ return; }
+    if(needed>0){ const me= i===0?state.players[0]:state.players[1]; const upd=i===0?{p0:{...me, bet:me.bet+needed, bank:me.bank-needed}}:{p1:{...me, bet:me.bet+needed, bank:me.bank-needed}}; const pot=state.pot+needed; setStatePatch({ ...upd, pot }); if(state.players[i].bet+needed===state.players[o].bet){ nextStreet(); setStatePatch({turn:state.dealer}); } }
+    else { nextStreet(); setStatePatch({turn:state.dealer}); }
+    flipTurn(); }
+  function betRaise(){ if(!isHost) return; const i=youIndex(), o=oppIndex(); const amt=parseInt($('#betAmt').value)||0; if(amt<=0) return; const needed=Math.max(0, state.players[o].bet - state.players[i].bet); const total=needed+amt; const me= i===0?state.players[0]:state.players[1]; if(me.bank<total) return alert('Not enough chips'); let upd={}; if(needed>0){ const me2={...me, bet:me.bet+needed, bank:me.bank-needed}; upd = i===0?{p0:me2}:{p1:me2}; setStatePatch({...upd, pot: state.pot+needed}); }
+    const me3={...(i===0?state.players[0]:state.players[1])}; me3.bet+=amt; me3.bank-=amt; upd = i===0?{p0:me3}:{p1:me3}; setStatePatch({...upd, pot: state.pot+amt}); flipTurn(); }
+  function flipTurn(){ setStatePatch({turn: state.turn?0:1}); }
+
+  function showdown(){ if(!isHost) return; let winner=-1; const p0=evaluate7([...state.players[0].cards,...state.board]); const p1=evaluate7([...state.players[1].cards,...state.board]); const cmp=compareRanks(p0,p1); if(state.players[0].folded) winner=1; else if(state.players[1].folded) winner=0; else winner = cmp>0?0:(cmp<0?1:-1); if(winner===-1){ setStatePatch({ p0:{...state.players[0], bank:state.players[0].bank+Math.floor(state.pot/2)}, p1:{...state.players[1], bank:state.players[1].bank+Math.ceil(state.pot/2)} }); }
+    else { const key = winner===0?'p0':'p1'; const w= state.players[winner]; const upd={}; upd[key]={...w, bank:w.bank+state.pot}; setStatePatch(upd); }
+    endHand(); }
+  function endHand(){ if(!isHost) return; const dealer= state.dealer?0:1; setStatePatch({ pot:0, 'p0/bet':0, 'p1/bet':0, dealer, turn:dealer, street:'Preflop' }); }
+
+  // Wire buttons
+  $('#btnDeal').onclick=startHand; $('#btnFold').onclick=fold; $('#btnCheck').onclick=checkCall; $('#btnBet').onclick=betRaise; $('#btnShowdown').onclick=showdown;
+
   function render(){ $('#youName').textContent=state.players[youIndex()].name + (isHost?' (Host)':''); $('#oppName').textContent=state.players[oppIndex()].name + (!isHost?' (Host)':''); $('#youBank').textContent=state.players[youIndex()].bank; $('#oppBank').textContent=state.players[oppIndex()].bank; $('#youBet').textContent=state.players[youIndex()].bet; $('#oppBet').textContent=state.players[oppIndex()].bet; $('#handNo').textContent=state.handNo; $('#street').textContent=state.street; $('#pot').textContent=state.pot; $('#turnTag').textContent=(state.turn===youIndex())?'Your':'Their'; updateCodeTag();
     const boardEl=$('#board'); boardEl.innerHTML=''; state.board.forEach(c=>boardEl.appendChild(renderCard(c)));
     const yh=$('#yourHand'); yh.innerHTML=''; state.players[youIndex()].cards.forEach(c=>yh.appendChild(renderCard(c)));
     const oh=$('#oppHand'); oh.innerHTML=''; if(state.street==='Showdown'){ state.players[oppIndex()].cards.forEach(c=>oh.appendChild(renderCard(c))); } else { state.players[oppIndex()].cards.forEach(_=>oh.appendChild((()=>{const e=document.createElement('div'); e.className='card-ui back'; e.textContent=''; return e;})())); }
     const yourTurn=state.turn===youIndex(); const inHand=state.board.length>0 || state.street==='Preflop'; $('#btnFold').classList.toggle('hidden', !yourTurn || !inHand || state.street==='Showdown'); $('#btnCheck').classList.toggle('hidden', !yourTurn || state.street==='Showdown'); $('#betWrap').classList.toggle('hidden', !yourTurn || state.street==='Showdown'); $('#btnShowdown').classList.toggle('hidden', !(state.street==='River' || state.street==='Showdown'));
   }
-
-  // Auto-join if #CODE present
-  window.addEventListener('load', ()=>{
-    const hash=decodeURIComponent(location.hash.replace('#','')); if(hash){ $('#codeInput').value=hash; state.code=hash; updateCodeTag(); startPeerFlow(hash); }
-  });
   </script>
-  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+
+  <!-- Firebase SDKs (compat to keep it simple in one file) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+
+  <!-- Suggested Realtime Database rules (put these in Firebase console → Rules)
+  {
+    "rules": {
+      "rooms": {
+        "$code": {
+          ".read": true,
+          ".write": true,
+          "state": {
+            ".validate": "newData.hasChildren(['handNo','street','dealer','sb','bb','pot','board','turn','p0','p1'])"
+          },
+          "meta": {
+            "host": { ".validate": "newData.isString() && newData.val().length > 0" }
+          }
+        }
+      }
+    }
+  }
+  -->
 </body>
 </html>
